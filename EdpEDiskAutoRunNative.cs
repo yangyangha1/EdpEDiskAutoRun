@@ -255,11 +255,27 @@ internal static class EdpEDiskAutoRunNative
 
     private static Image LoadBrandImage()
     {
-        using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("EdpEDiskIcon.png"))
+        string executable = Assembly.GetExecutingAssembly().Location;
+        IntPtr[] handles = new IntPtr[1];
+        uint[] resourceIds = new uint[1];
+        uint extracted = PrivateExtractIcons(executable, 0, 256, 256, handles, resourceIds, 1, 0);
+        if (extracted > 0 && handles[0] != IntPtr.Zero)
         {
-            if (stream == null) throw new InvalidOperationException("程序图标资源缺失。");
-            using (Image source = Image.FromStream(stream))
-                return new Bitmap(source);
+            try
+            {
+                using (Icon source = (Icon)Icon.FromHandle(handles[0]).Clone())
+                    return source.ToBitmap();
+            }
+            finally
+            {
+                DestroyIcon(handles[0]);
+            }
+        }
+
+        using (Icon fallback = Icon.ExtractAssociatedIcon(executable))
+        {
+            if (fallback == null) throw new InvalidOperationException("程序图标资源缺失。");
+            return fallback.ToBitmap();
         }
     }
 
@@ -425,6 +441,10 @@ internal static class EdpEDiskAutoRunNative
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int command);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern uint PrivateExtractIcons(
+        string fileName, int iconIndex, int iconWidth, int iconHeight,
+        IntPtr[] iconHandles, uint[] resourceIds, uint iconCount, uint flags);
+    [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr iconHandle);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern uint RegisterWindowMessage(string message);
     [DllImport("user32.dll")] private static extern bool SendNotifyMessage(IntPtr hWnd, uint message, UIntPtr wParam, IntPtr lParam);
 

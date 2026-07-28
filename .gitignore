@@ -15,3 +15,11 @@ desktop.ini
 # Python cache
 __pycache__/
 *.pyc
+
+# Generated/release-only artifacts
+EdpEDiskAutoRun.exe
+EdpEDiskAutoRun-icon-1024.png
+EdpEDiskAutoRun-icon-sizes.png
+EdpEDiskAutoRun-icon.svg
+generate_icon.py
+SHA256SUMS.txt
