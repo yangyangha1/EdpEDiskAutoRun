@@ -1,0 +1,17 @@
+# Local/legacy builds
+*.new.exe
+*.backup.exe
+EdpEDiskAutoRunSetup.exe
+
+# Superseded script-based implementation
+EdpEDisk-AutoRun.ps1
+EdpEDisk-AutoRun.vbs
+EdpEDiskAutoRunInstaller.cs
+Install-EdpEDisk-AutoRun.bat
+
+# Windows folder metadata
+desktop.ini
+
+# Python cache
+__pycache__/
+*.pyc
