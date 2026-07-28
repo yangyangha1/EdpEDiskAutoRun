@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#168BFF"/>
+      <stop offset="1" stop-color="#0756C9"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="28" stdDeviation="34" flood-color="#07377E" flood-opacity=".30"/>
+    </filter>
+  </defs>
+
+  <rect x="72" y="72" width="880" height="880" rx="218" fill="url(#blue)" filter="url(#shadow)"/>
+
+  <!-- USB secure-disk silhouette -->
+  <rect x="210" y="350" width="508" height="330" rx="92" fill="#FFFFFF"/>
+  <path d="M690 410h100c20 0 36 16 36 36v138c0 20-16 36-36 36H690z" fill="#FFFFFF"/>
+  <rect x="744" y="445" width="31" height="47" rx="8" fill="#0B67D9"/>
+  <rect x="744" y="538" width="31" height="47" rx="8" fill="#0B67D9"/>
+  <circle cx="318" cy="515" r="45" fill="#0B67D9"/>
+
+  <!-- Persistent/ready badge -->
+  <circle cx="760" cy="746" r="150" fill="#FFFFFF"/>
+  <circle cx="760" cy="746" r="124" fill="#22B86A"/>
+  <path d="M696 745l43 44 88-96" fill="none" stroke="#FFFFFF" stroke-width="42"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

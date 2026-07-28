@@ -1,0 +1,462 @@
+using System;
+using System.Diagnostics;
+using System.Drawing;
+using System.IO;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Windows.Forms;
+using Microsoft.Win32;
+
+[assembly: AssemblyTitle("EdpEDisk 自动启动与托盘固定")]
+[assembly: AssemblyDescription("自动启动移动存储介质中的 EdpEDisk.exe 并保持托盘图标可见")]
+[assembly: AssemblyCompany("Local Utility")]
+[assembly: AssemblyProduct("EdpEDisk AutoRun")]
+[assembly: AssemblyVersion("1.2.4.0")]
+[assembly: AssemblyFileVersion("1.2.4.0")]
+
+internal static class EdpEDiskAutoRunNative
+{
+    private const string ProductName = "EdpEDisk 自动启动与托盘固定";
+    private const string UsageWarning = "重要：仅用于外网电脑，内网电脑禁止使用。";
+    private const string InstallDetails =
+        "插入 U 盘后会自动寻找根目录下的 EdpEDisk.exe，\r\n" +
+        "并在开机、程序启动及每小时定期确认托盘图标保持可见。\r\n" +
+        "不会自动打开 U 盘文件夹。";
+    private static readonly string InstallDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "EdpEDiskAutoRun");
+    private static readonly string InstalledExe = Path.Combine(InstallDir, "EdpEDiskAutoRun.exe");
+    private static readonly string Marker = Path.Combine(InstallDir, "installed.flag");
+    private static readonly string State = Path.Combine(InstallDir, "autoplay-state.txt");
+    private static readonly string Shortcut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "EdpEDiskAutoRun.lnk");
+    private static readonly string EventName = "Local\\EdpEDiskAutoRun_Stop";
+    private static readonly string MutexName = "Local\\EdpEDiskAutoRun_Watcher";
+
+    [STAThread]
+    private static void Main(string[] args)
+    {
+        EnableHighDpiRendering();
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        try
+        {
+            if (args.Length > 0 && args[0].Equals("--preview", StringComparison.OrdinalIgnoreCase))
+                ShowBrandedDialog("准备安装或更新 1.2.4 版", InstallDetails,
+                    MessageBoxButtons.YesNo, "确认安装", "取消", UsageWarning);
+            else if (args.Length > 0 && args[0].Equals("--watch", StringComparison.OrdinalIgnoreCase))
+                Watch();
+            else if (File.Exists(Marker) && File.Exists(Shortcut) && InstalledVersionMatchesCurrent())
+                Uninstall();
+            else if (ShowBrandedDialog("准备安装或更新 1.2.4 版", InstallDetails,
+                MessageBoxButtons.YesNo, "确认安装", "取消", UsageWarning) == DialogResult.Yes)
+                Install();
+        }
+        catch (Exception ex)
+        {
+            ShowBrandedDialog("操作失败", ex.Message +
+                "\r\n\r\n如果安全软件拦截了本程序，请先确认文件来源可信。",
+                MessageBoxButtons.OK, null, null, UsageWarning);
+        }
+    }
+
+    private static void EnableHighDpiRendering()
+    {
+        // Per-Monitor V2 prevents Windows from bitmap-scaling MessageBox text
+        // and icons on high-DPI displays. Older Windows versions fall back to
+        // the manifest declaration without requiring administrator rights.
+        try
+        {
+            SetProcessDpiAwarenessContext(new IntPtr(-4));
+        }
+        catch (EntryPointNotFoundException) { }
+        catch (DllNotFoundException) { }
+    }
+
+    private static void Install()
+    {
+        Directory.CreateDirectory(InstallDir);
+        string currentExe = Process.GetCurrentProcess().MainModule.FileName;
+        if (!string.Equals(Path.GetFullPath(currentExe), Path.GetFullPath(InstalledExe), StringComparison.OrdinalIgnoreCase))
+        {
+            StopWatcher();
+            File.Copy(currentExe, InstalledExe, true);
+        }
+        bool hadValue = false;
+        int oldValue = 0;
+        if (!File.Exists(State))
+        {
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers"))
+            {
+                if (key != null && key.GetValue("DisableAutoplay") != null)
+                {
+                    hadValue = true;
+                    oldValue = Convert.ToInt32(key.GetValue("DisableAutoplay"));
+                }
+            }
+            File.WriteAllText(State, (hadValue ? "1" : "0") + "\r\n" + oldValue);
+        }
+        File.WriteAllText(Marker, "installed");
+        CreateShortcut();
+        using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers"))
+            key.SetValue("DisableAutoplay", 1, RegistryValueKind.DWord);
+        StartWatcher();
+        ShowBrandedDialog("1.2.4 版安装或更新成功", InstallDetails +
+            "\r\n\r\n再次运行相同版本的本 EXE 可卸载自动启动功能。",
+            MessageBoxButtons.OK, null, null, UsageWarning);
+    }
+
+    private static void Uninstall()
+    {
+        if (ShowBrandedDialog("检测到已经安装", "是否卸载 EdpEDisk 自动启动功能？",
+            MessageBoxButtons.YesNo, "确认卸载", "取消") != DialogResult.Yes) return;
+        StopWatcher();
+        if (File.Exists(Shortcut)) File.Delete(Shortcut);
+        bool hadValue = false;
+        int oldValue = 0;
+        if (File.Exists(State))
+        {
+            string[] lines = File.ReadAllLines(State);
+            if (lines.Length > 0) hadValue = lines[0] == "1";
+            if (lines.Length > 1) int.TryParse(lines[1], out oldValue);
+        }
+        using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers"))
+        {
+            if (hadValue) key.SetValue("DisableAutoplay", oldValue, RegistryValueKind.DWord);
+            else key.DeleteValue("DisableAutoplay", false);
+        }
+        if (File.Exists(Marker)) File.Delete(Marker);
+        ShowBrandedDialog("卸载完成", "已卸载自动启动功能。", MessageBoxButtons.OK);
+    }
+
+    private static DialogResult ShowBrandedDialog(
+        string heading,
+        string body,
+        MessageBoxButtons buttons,
+        string yesText = null,
+        string noText = null,
+        string warning = null)
+    {
+        using (Form dialog = new Form())
+        using (Image logo = LoadBrandImage())
+        {
+            dialog.Text = ProductName;
+            dialog.Icon = Icon.ExtractAssociatedIcon(Process.GetCurrentProcess().MainModule.FileName);
+            dialog.ShowIcon = true;
+            dialog.ShowInTaskbar = true;
+            dialog.StartPosition = FormStartPosition.CenterScreen;
+            dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+            dialog.MaximizeBox = false;
+            dialog.MinimizeBox = false;
+            dialog.AutoScaleMode = AutoScaleMode.Dpi;
+            dialog.AutoScaleDimensions = new SizeF(96F, 96F);
+            dialog.AutoSize = true;
+            dialog.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            dialog.MinimumSize = new Size(650, 0);
+            dialog.Font = new Font("Segoe UI", 10F, FontStyle.Regular, GraphicsUnit.Point);
+
+            TableLayoutPanel layout = new TableLayoutPanel();
+            layout.Dock = DockStyle.Fill;
+            layout.AutoSize = true;
+            layout.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            layout.Padding = new Padding(26, 24, 26, 18);
+            layout.ColumnCount = 2;
+            layout.RowCount = 4;
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96F));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            PictureBox picture = new PictureBox();
+            picture.Size = new Size(76, 76);
+            picture.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+            picture.Margin = new Padding(0, 0, 20, 14);
+            picture.SizeMode = PictureBoxSizeMode.Zoom;
+            picture.Image = logo;
+
+            Label title = new Label();
+            title.AutoSize = true;
+            title.MaximumSize = new Size(500, 0);
+            title.MinimumSize = new Size(500, 0);
+            title.Anchor = AnchorStyles.Left;
+            title.Margin = new Padding(0, 8, 0, 14);
+            title.Text = heading;
+            title.TextAlign = ContentAlignment.MiddleLeft;
+            title.Font = new Font("Segoe UI", 14F, FontStyle.Bold, GraphicsUnit.Point);
+
+            Label warningText = new Label();
+            warningText.AutoSize = true;
+            warningText.MaximumSize = new Size(596, 0);
+            warningText.MinimumSize = new Size(596, 0);
+            warningText.Margin = new Padding(0, 2, 0, 16);
+            warningText.Text = warning ?? "";
+            warningText.Visible = !string.IsNullOrEmpty(warning);
+            warningText.ForeColor = Color.FromArgb(190, 36, 36);
+            warningText.Font = new Font("Segoe UI", 10.5F, FontStyle.Bold, GraphicsUnit.Point);
+
+            Label bodyText = new Label();
+            bodyText.AutoSize = true;
+            bodyText.MaximumSize = new Size(596, 0);
+            bodyText.MinimumSize = new Size(596, 0);
+            bodyText.Margin = new Padding(0, 0, 0, 18);
+            bodyText.Text = body;
+            bodyText.TextAlign = ContentAlignment.TopLeft;
+            bodyText.Font = new Font("Segoe UI", 10.5F, FontStyle.Regular, GraphicsUnit.Point);
+
+            FlowLayoutPanel actions = new FlowLayoutPanel();
+            actions.AutoSize = true;
+            actions.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            actions.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            actions.FlowDirection = FlowDirection.RightToLeft;
+            actions.WrapContents = false;
+            actions.Padding = new Padding(0, 10, 0, 0);
+
+            if (buttons == MessageBoxButtons.YesNo)
+            {
+                Button no = CreateDialogButton(noText ?? "否(&N)", DialogResult.No);
+                Button yes = CreateDialogButton(yesText ?? "是(&Y)", DialogResult.Yes);
+                actions.Controls.Add(no);
+                actions.Controls.Add(yes);
+                dialog.AcceptButton = yes;
+                dialog.CancelButton = no;
+            }
+            else
+            {
+                Button ok = CreateDialogButton("确定", DialogResult.OK);
+                actions.Controls.Add(ok);
+                dialog.AcceptButton = ok;
+                dialog.CancelButton = ok;
+            }
+
+            layout.Controls.Add(picture, 0, 0);
+            layout.Controls.Add(title, 1, 0);
+            layout.Controls.Add(warningText, 0, 1);
+            layout.SetColumnSpan(warningText, 2);
+            layout.Controls.Add(bodyText, 0, 2);
+            layout.SetColumnSpan(bodyText, 2);
+            layout.Controls.Add(actions, 0, 3);
+            layout.SetColumnSpan(actions, 2);
+            dialog.Controls.Add(layout);
+            return dialog.ShowDialog();
+        }
+    }
+
+    private static Button CreateDialogButton(string text, DialogResult result)
+    {
+        Button button = new Button();
+        button.Text = text;
+        button.DialogResult = result;
+        button.AutoSize = false;
+        button.Size = new Size(128, 38);
+        button.Margin = new Padding(12, 0, 0, 0);
+        button.FlatStyle = FlatStyle.System;
+        return button;
+    }
+
+    private static Image LoadBrandImage()
+    {
+        using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("EdpEDiskIcon.png"))
+        {
+            if (stream == null) throw new InvalidOperationException("程序图标资源缺失。");
+            using (Image source = Image.FromStream(stream))
+                return new Bitmap(source);
+        }
+    }
+
+    private static void StartWatcher()
+    {
+        string exe = InstalledExe;
+        Process.Start(new ProcessStartInfo(exe, "--watch") { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden });
+    }
+
+    private static void Watch()
+    {
+        bool createdNew;
+        using (Mutex singleInstance = new Mutex(true, MutexName, out createdNew))
+        {
+            if (!createdNew) return;
+            using (EventWaitHandle stop = new EventWaitHandle(false, EventResetMode.ManualReset, EventName))
+            {
+                string lastVolume = "";
+                DateTime nextTrayCorrection = DateTime.MinValue;
+
+                // Explorer can recreate notification-area records late during logon.
+                // Waiting briefly prevents Explorer from overwriting our preference.
+                if (stop.WaitOne(8000)) return;
+
+                while (true)
+                {
+                    try
+                    {
+                        if (DateTime.UtcNow >= nextTrayCorrection)
+                        {
+                            PromoteAndRefreshTrayIcon();
+                            nextTrayCorrection = DateTime.UtcNow.AddHours(1);
+                        }
+                        DriveInfo[] drives = DriveInfo.GetDrives();
+                        foreach (DriveInfo drive in drives)
+                        {
+                            try
+                            {
+                                if (drive.DriveType != DriveType.Removable || !drive.IsReady) continue;
+                                string exe = Path.Combine(drive.RootDirectory.FullName, "EdpEDisk.exe");
+                                if (!File.Exists(exe) || lastVolume == drive.Name) continue;
+                                lastVolume = drive.Name;
+                                if (Process.GetProcessesByName("EdpEDisk").Length == 0)
+                                    Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = drive.RootDirectory.FullName, UseShellExecute = true });
+
+                                // The icon record is created asynchronously. Wait once,
+                                // then apply a single correction for this launch.
+                                if (stop.WaitOne(2000)) return;
+                                PromoteAndRefreshTrayIcon();
+                                nextTrayCorrection = DateTime.UtcNow.AddHours(1);
+                                RestoreWindows();
+                            }
+                            catch (IOException) { }
+                            catch (UnauthorizedAccessException) { }
+                        }
+
+                        bool stillPresent = false;
+                        foreach (DriveInfo drive in drives)
+                        {
+                            try
+                            {
+                                if (drive.DriveType == DriveType.Removable && drive.IsReady && drive.Name == lastVolume)
+                                    stillPresent = true;
+                            }
+                            catch (IOException) { }
+                            catch (UnauthorizedAccessException) { }
+                        }
+                        if (!stillPresent) lastVolume = "";
+                    }
+                    catch
+                    {
+                        // Removable drives can disappear between enumeration and access.
+                        // Keep the watcher alive and retry instead of exiting at logon.
+                    }
+
+                    // Drive discovery stays responsive, while tray writes are hourly.
+                    if (stop.WaitOne(3000)) return;
+                }
+            }
+        }
+    }
+
+    private static bool InstalledVersionMatchesCurrent()
+    {
+        if (!File.Exists(InstalledExe)) return false;
+        string installedVersion = FileVersionInfo.GetVersionInfo(InstalledExe).FileVersion;
+        string currentVersion = Assembly.GetExecutingAssembly().GetName().Version.ToString();
+        return string.Equals(installedVersion, currentVersion, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void StopWatcher()
+    {
+        using (EventWaitHandle stop = new EventWaitHandle(false, EventResetMode.ManualReset, EventName))
+            stop.Set();
+        Thread.Sleep(2500);
+    }
+
+    private static void CreateShortcut()
+    {
+        Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+        dynamic shell = Activator.CreateInstance(shellType);
+        dynamic link = shell.CreateShortcut(Shortcut);
+        link.TargetPath = InstalledExe;
+        link.Arguments = "--watch";
+        link.WorkingDirectory = InstallDir;
+        link.WindowStyle = 7;
+        link.Description = ProductName;
+        link.Save();
+    }
+
+    private static void PromoteAndRefreshTrayIcon()
+    {
+        if (!PromoteEdpEDiskTrayIcons()) return;
+        NotifyEdpEDiskTaskbarCreated();
+        Thread.Sleep(300);
+        PromoteEdpEDiskTrayIcons();
+    }
+
+    private static bool PromoteEdpEDiskTrayIcons()
+    {
+        // Windows 11 stores each notification icon preference under the
+        // current user's NotifyIconSettings key. IsPromoted=1 means the icon
+        // stays in the visible tray area. This requires no administrator rights.
+        using (RegistryKey root = Registry.CurrentUser.OpenSubKey(@"Control Panel\NotifyIconSettings"))
+        {
+            if (root == null) return false;
+            bool changed = false;
+            foreach (string subKeyName in root.GetSubKeyNames())
+            {
+                try
+                {
+                    using (RegistryKey item = root.OpenSubKey(subKeyName, true))
+                    {
+                        if (item == null) continue;
+                        string executablePath = item.GetValue("ExecutablePath") as string;
+                        string tooltip = item.GetValue("InitialTooltip") as string;
+                        bool isEdpEDisk =
+                            (!string.IsNullOrEmpty(executablePath) &&
+                             string.Equals(Path.GetFileName(executablePath), "EdpEDisk.exe", StringComparison.OrdinalIgnoreCase)) ||
+                            (!string.IsNullOrEmpty(tooltip) &&
+                             tooltip.IndexOf("国家电网移动存储介质管理系统", StringComparison.OrdinalIgnoreCase) >= 0);
+                        object promotedValue = item.GetValue("IsPromoted");
+                        int promoted = promotedValue == null ? 0 : Convert.ToInt32(promotedValue);
+                        if (isEdpEDisk && promoted != 1)
+                        {
+                            item.SetValue("IsPromoted", 1, RegistryValueKind.DWord);
+                            changed = true;
+                        }
+                    }
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Ignore an inaccessible stale icon record and keep watching.
+                }
+            }
+            return changed;
+        }
+    }
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+    [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int command);
+    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern uint RegisterWindowMessage(string message);
+    [DllImport("user32.dll")] private static extern bool SendNotifyMessage(IntPtr hWnd, uint message, UIntPtr wParam, IntPtr lParam);
+
+    private static void NotifyEdpEDiskTaskbarCreated()
+    {
+        uint message = RegisterWindowMessage("TaskbarCreated");
+        foreach (Process process in Process.GetProcessesByName("EdpEDisk"))
+        {
+            uint target = (uint)process.Id;
+            EnumWindows((hWnd, unused) =>
+            {
+                uint pid;
+                GetWindowThreadProcessId(hWnd, out pid);
+                if (pid == target)
+                    SendNotifyMessage(hWnd, message, UIntPtr.Zero, IntPtr.Zero);
+                return true;
+            }, IntPtr.Zero);
+        }
+    }
+
+    private static void RestoreWindows()
+    {
+        foreach (Process process in Process.GetProcessesByName("EdpEDisk"))
+        {
+            uint target = (uint)process.Id;
+            EnumWindows((hWnd, unused) =>
+            {
+                uint pid;
+                GetWindowThreadProcessId(hWnd, out pid);
+                if (pid == target) { ShowWindow(hWnd, 9); SetForegroundWindow(hWnd); }
+                return true;
+            }, IntPtr.Zero);
+        }
+    }
+}
