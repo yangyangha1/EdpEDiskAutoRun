@@ -6,8 +6,6 @@ Windows 下的 EdpEDisk 自动启动与托盘图标固定工具。
 
 当前发布版本：`1.2.4`
 
-![多尺寸图标预览](EdpEDiskAutoRun-icon-sizes.png)
-
 ## 功能
 
 - 插入移动盘后自动查找并启动根目录下的 `EdpEDisk.exe`。
@@ -52,7 +50,6 @@ $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
   /optimize+ `
   /win32manifest:EdpEDiskAutoRun.manifest `
   /win32icon:EdpEDiskAutoRun.ico `
-  /resource:EdpEDiskAutoRun-icon-1024.png,EdpEDiskIcon.png `
   /reference:System.Windows.Forms.dll `
   /reference:System.Drawing.dll `
   /reference:Microsoft.CSharp.dll `
@@ -60,15 +57,10 @@ $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
   EdpEDiskAutoRunNative.cs
 ```
 
-## 图标资源
+## 下载
 
-- `EdpEDiskAutoRun-icon.svg`：矢量原稿。
-- `EdpEDiskAutoRun-icon-1024.png`：1024 像素高清图。
-- `EdpEDiskAutoRun.ico`：包含 16、20、24、32、40、48、64、96、128 和 256 像素。
-- `generate_icon.py`：使用 Pillow 重新生成 PNG 和 ICO。
-
-## 校验
-
-见 [`SHA256SUMS.txt`](SHA256SUMS.txt)。
+编译成品和 SHA-256 校验文件仅放在
+[GitHub Releases](https://github.com/yangyangha1/EdpEDiskAutoRun/releases)；
+代码仓库不存放 EXE、生成预览图或校验输出。
 
 本项目未附带开源许可证；除 GitHub 提供的浏览和派生功能外，作者保留相关权利。
