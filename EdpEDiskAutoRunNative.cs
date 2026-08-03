@@ -12,19 +12,20 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("自动启动移动存储介质中的 EdpEDisk.exe 并保持托盘图标可见")]
 [assembly: AssemblyCompany("Local Utility")]
 [assembly: AssemblyProduct("EdpEDisk AutoRun")]
-[assembly: AssemblyVersion("1.2.4.0")]
-[assembly: AssemblyFileVersion("1.2.4.0")]
+[assembly: AssemblyVersion("1.2.6.0")]
+[assembly: AssemblyFileVersion("1.2.6.0")]
 
 internal static class EdpEDiskAutoRunNative
 {
     private const string ProductName = "EdpEDisk 自动启动与托盘固定";
+    private const string ProductVersion = "1.2.6";
     private const string UsageWarning = "重要：仅用于外网电脑，内网电脑禁止使用。";
     private const string InstallDetails =
         "插入 U 盘后会自动寻找根目录下的 EdpEDisk.exe，\r\n" +
         "并在开机、程序启动及每小时定期确认托盘图标保持可见。\r\n" +
         "不会自动打开 U 盘文件夹。";
     private static readonly string InstallDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "EdpEDiskAutoRun");
-    private static readonly string InstalledExe = Path.Combine(InstallDir, "EdpEDiskAutoRun.exe");
+    private static readonly string InstalledExe = Path.Combine(InstallDir, "EdpEDiskAutoRun-" + ProductVersion + ".exe");
     private static readonly string Marker = Path.Combine(InstallDir, "installed.flag");
     private static readonly string State = Path.Combine(InstallDir, "autoplay-state.txt");
     private static readonly string Shortcut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "EdpEDiskAutoRun.lnk");
@@ -34,19 +35,26 @@ internal static class EdpEDiskAutoRunNative
     [STAThread]
     private static void Main(string[] args)
     {
+        // The long-running watcher never shows UI. Return through this path
+        // before WinForms, visual styles, DPI, fonts, and image resources load.
+        if (args.Length > 0 && args[0].Equals("--watch", StringComparison.OrdinalIgnoreCase))
+        {
+            try { Watch(); }
+            catch { }
+            return;
+        }
+
         EnableHighDpiRendering();
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         try
         {
             if (args.Length > 0 && args[0].Equals("--preview", StringComparison.OrdinalIgnoreCase))
-                ShowBrandedDialog("准备安装或更新 1.2.4 版", InstallDetails,
+                ShowBrandedDialog("准备安装或更新 " + ProductVersion + " 版", InstallDetails,
                     MessageBoxButtons.YesNo, "确认安装", "取消", UsageWarning);
-            else if (args.Length > 0 && args[0].Equals("--watch", StringComparison.OrdinalIgnoreCase))
-                Watch();
             else if (File.Exists(Marker) && File.Exists(Shortcut) && InstalledVersionMatchesCurrent())
                 Uninstall();
-            else if (ShowBrandedDialog("准备安装或更新 1.2.4 版", InstallDetails,
+            else if (ShowBrandedDialog("准备安装或更新 " + ProductVersion + " 版", InstallDetails,
                 MessageBoxButtons.YesNo, "确认安装", "取消", UsageWarning) == DialogResult.Yes)
                 Install();
         }
@@ -75,11 +83,9 @@ internal static class EdpEDiskAutoRunNative
     {
         Directory.CreateDirectory(InstallDir);
         string currentExe = Process.GetCurrentProcess().MainModule.FileName;
+        StopWatcherAndWait();
         if (!string.Equals(Path.GetFullPath(currentExe), Path.GetFullPath(InstalledExe), StringComparison.OrdinalIgnoreCase))
-        {
-            StopWatcher();
-            File.Copy(currentExe, InstalledExe, true);
-        }
+            DeployVersionedExecutable(currentExe);
         bool hadValue = false;
         int oldValue = 0;
         if (!File.Exists(State))
@@ -99,7 +105,8 @@ internal static class EdpEDiskAutoRunNative
         using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers"))
             key.SetValue("DisableAutoplay", 1, RegistryValueKind.DWord);
         StartWatcher();
-        ShowBrandedDialog("1.2.4 版安装或更新成功", InstallDetails +
+        CleanupOldInstalledExecutables(currentExe);
+        ShowBrandedDialog(ProductVersion + " 版安装或更新成功", InstallDetails +
             "\r\n\r\n再次运行相同版本的本 EXE 可卸载自动启动功能。",
             MessageBoxButtons.OK, null, null, UsageWarning);
     }
@@ -108,7 +115,7 @@ internal static class EdpEDiskAutoRunNative
     {
         if (ShowBrandedDialog("检测到已经安装", "是否卸载 EdpEDisk 自动启动功能？",
             MessageBoxButtons.YesNo, "确认卸载", "取消") != DialogResult.Yes) return;
-        StopWatcher();
+        StopWatcherAndWait();
         if (File.Exists(Shortcut)) File.Delete(Shortcut);
         bool hadValue = false;
         int oldValue = 0;
@@ -124,6 +131,7 @@ internal static class EdpEDiskAutoRunNative
             else key.DeleteValue("DisableAutoplay", false);
         }
         if (File.Exists(Marker)) File.Delete(Marker);
+        CleanupOldInstalledExecutables(Process.GetCurrentProcess().MainModule.FileName, string.Empty);
         ShowBrandedDialog("卸载完成", "已卸载自动启动功能。", MessageBoxButtons.OK);
     }
 
@@ -360,17 +368,166 @@ internal static class EdpEDiskAutoRunNative
 
     private static bool InstalledVersionMatchesCurrent()
     {
-        if (!File.Exists(InstalledExe)) return false;
-        string installedVersion = FileVersionInfo.GetVersionInfo(InstalledExe).FileVersion;
+        string installedPath = GetShortcutTarget();
+        if (string.IsNullOrEmpty(installedPath) || !File.Exists(installedPath)) return false;
+        string installedVersion = FileVersionInfo.GetVersionInfo(installedPath).FileVersion;
         string currentVersion = Assembly.GetExecutingAssembly().GetName().Version.ToString();
         return string.Equals(installedVersion, currentVersion, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void StopWatcher()
+    private static string GetShortcutTarget()
+    {
+        if (!File.Exists(Shortcut)) return null;
+        object shell = null;
+        object link = null;
+        try
+        {
+            Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+            shell = Activator.CreateInstance(shellType);
+            link = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { Shortcut });
+            return Convert.ToString(link.GetType().InvokeMember("TargetPath", BindingFlags.GetProperty, null, link, null));
+        }
+        catch { return null; }
+        finally
+        {
+            if (link != null && Marshal.IsComObject(link)) Marshal.FinalReleaseComObject(link);
+            if (shell != null && Marshal.IsComObject(shell)) Marshal.FinalReleaseComObject(shell);
+        }
+    }
+
+    private static void DeployVersionedExecutable(string source)
+    {
+        string staging = InstalledExe + ".new-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            RetryFileOperation(delegate { File.Copy(source, staging, true); });
+            ClearReadOnly(InstalledExe);
+            RetryFileOperation(delegate
+            {
+                if (File.Exists(InstalledExe)) File.Delete(InstalledExe);
+                File.Move(staging, InstalledExe);
+            });
+        }
+        finally
+        {
+            TryDeleteFile(staging);
+        }
+    }
+
+    private static void RetryFileOperation(Action operation)
+    {
+        Exception last = null;
+        for (int attempt = 0; attempt < 10; attempt++)
+        {
+            try
+            {
+                operation();
+                return;
+            }
+            catch (IOException ex) { last = ex; }
+            catch (UnauthorizedAccessException ex) { last = ex; }
+            Thread.Sleep(500);
+        }
+        throw new IOException("安装文件在多次重试后仍无法写入。请关闭正在运行的旧版程序后重试。", last);
+    }
+
+    private static void StopWatcherAndWait()
     {
         using (EventWaitHandle stop = new EventWaitHandle(false, EventResetMode.ManualReset, EventName))
             stop.Set();
-        Thread.Sleep(2500);
+
+        DateTime deadline = DateTime.UtcNow.AddSeconds(8);
+        Process[] remaining;
+        do
+        {
+            remaining = GetManagedProcesses();
+            if (remaining.Length == 0) return;
+            foreach (Process process in remaining)
+            {
+                try { process.WaitForExit(250); }
+                catch { }
+                finally { process.Dispose(); }
+            }
+        } while (DateTime.UtcNow < deadline);
+
+        foreach (Process process in GetManagedProcesses())
+        {
+            try
+            {
+                process.Kill();
+                process.WaitForExit(3000);
+            }
+            catch { }
+            finally { process.Dispose(); }
+        }
+    }
+
+    private static Process[] GetManagedProcesses()
+    {
+        System.Collections.Generic.List<Process> matches = new System.Collections.Generic.List<Process>();
+        int currentProcessId;
+        using (Process currentProcess = Process.GetCurrentProcess())
+            currentProcessId = currentProcess.Id;
+        foreach (Process process in Process.GetProcesses())
+        {
+            if (process.Id == currentProcessId)
+            {
+                process.Dispose();
+                continue;
+            }
+            try
+            {
+                string path = process.MainModule.FileName;
+                string directory = Path.GetDirectoryName(path);
+                string name = Path.GetFileName(path);
+                if (string.Equals(directory, InstallDir, StringComparison.OrdinalIgnoreCase) &&
+                    name.StartsWith("EdpEDiskAutoRun", StringComparison.OrdinalIgnoreCase))
+                {
+                    matches.Add(process);
+                    continue;
+                }
+            }
+            catch { }
+            process.Dispose();
+        }
+        return matches.ToArray();
+    }
+
+    private static void CleanupOldInstalledExecutables(string currentExe, string keepExe = null)
+    {
+        if (!Directory.Exists(InstallDir)) return;
+        string keep = keepExe ?? InstalledExe;
+        foreach (string path in Directory.GetFiles(InstallDir, "EdpEDiskAutoRun*.exe"))
+        {
+            if (string.Equals(Path.GetFullPath(path), Path.GetFullPath(keep), StringComparison.OrdinalIgnoreCase)) continue;
+            if (string.Equals(Path.GetFullPath(path), Path.GetFullPath(currentExe), StringComparison.OrdinalIgnoreCase)) continue;
+            TryDeleteFile(path);
+        }
+    }
+
+    private static void ClearReadOnly(string path)
+    {
+        if (!File.Exists(path)) return;
+        FileAttributes attributes = File.GetAttributes(path);
+        if ((attributes & FileAttributes.ReadOnly) != 0)
+            File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            try
+            {
+                if (!File.Exists(path)) return;
+                ClearReadOnly(path);
+                File.Delete(path);
+                return;
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            Thread.Sleep(250);
+        }
     }
 
     private static void CreateShortcut()
