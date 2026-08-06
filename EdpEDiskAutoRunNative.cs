@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -12,14 +13,13 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("自动启动移动存储介质中的 EdpEDisk.exe 并保持托盘图标可见")]
 [assembly: AssemblyCompany("Local Utility")]
 [assembly: AssemblyProduct("EdpEDisk AutoRun")]
-[assembly: AssemblyVersion("1.2.6.0")]
-[assembly: AssemblyFileVersion("1.2.6.0")]
+[assembly: AssemblyVersion("1.2.9.0")]
+[assembly: AssemblyFileVersion("1.2.9.0")]
 
 internal static class EdpEDiskAutoRunNative
 {
     private const string ProductName = "EdpEDisk 自动启动与托盘固定";
-    private const string ProductVersion = "1.2.6";
-    private const string UsageWarning = "重要：仅用于外网电脑，内网电脑禁止使用。";
+    private const string ProductVersion = "1.2.9";
     private const string InstallDetails =
         "插入 U 盘后会自动寻找根目录下的 EdpEDisk.exe，\r\n" +
         "并在开机、程序启动及每小时定期确认托盘图标保持可见。\r\n" +
@@ -28,16 +28,24 @@ internal static class EdpEDiskAutoRunNative
     private static readonly string InstalledExe = Path.Combine(InstallDir, "EdpEDiskAutoRun-" + ProductVersion + ".exe");
     private static readonly string Marker = Path.Combine(InstallDir, "installed.flag");
     private static readonly string State = Path.Combine(InstallDir, "autoplay-state.txt");
-    private static readonly string Shortcut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "EdpEDiskAutoRun.lnk");
+    private static readonly string LegacyShortcut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "EdpEDiskAutoRun.lnk");
+    private const string ScheduledTaskName = "EdpEDiskAutoRun";
     private static readonly string EventName = "Local\\EdpEDiskAutoRun_Stop";
     private static readonly string MutexName = "Local\\EdpEDiskAutoRun_Watcher";
 
     [STAThread]
     private static void Main(string[] args)
     {
+        bool watchRequested = HasArgument(args, "--watch");
+        bool previewRequested = HasArgument(args, "--preview");
+        bool installRequested = HasArgument(args, "--install");
+        bool uninstallRequested = HasArgument(args, "--uninstall");
+
         // The long-running watcher never shows UI. Return through this path
         // before WinForms, visual styles, DPI, fonts, and image resources load.
-        if (args.Length > 0 && args[0].Equals("--watch", StringComparison.OrdinalIgnoreCase))
+        // A stale legacy startup entry without arguments must not fall back
+        // to the interactive installer either.
+        if (watchRequested || (!previewRequested && !installRequested && !uninstallRequested && IsCurrentInstallation()))
         {
             try { Watch(); }
             catch { }
@@ -49,21 +57,33 @@ internal static class EdpEDiskAutoRunNative
         Application.SetCompatibleTextRenderingDefault(false);
         try
         {
-            if (args.Length > 0 && args[0].Equals("--preview", StringComparison.OrdinalIgnoreCase))
+            if (previewRequested)
                 ShowBrandedDialog("准备安装或更新 " + ProductVersion + " 版", InstallDetails,
-                    MessageBoxButtons.YesNo, "确认安装", "取消", UsageWarning);
-            else if (File.Exists(Marker) && File.Exists(Shortcut) && InstalledVersionMatchesCurrent())
+                    MessageBoxButtons.YesNo, "确认安装", "取消");
+            else if (uninstallRequested)
                 Uninstall();
             else if (ShowBrandedDialog("准备安装或更新 " + ProductVersion + " 版", InstallDetails,
-                MessageBoxButtons.YesNo, "确认安装", "取消", UsageWarning) == DialogResult.Yes)
+                MessageBoxButtons.YesNo, "确认安装", "取消") == DialogResult.Yes)
                 Install();
         }
         catch (Exception ex)
         {
             ShowBrandedDialog("操作失败", ex.Message +
                 "\r\n\r\n如果安全软件拦截了本程序，请先确认文件来源可信。",
-                MessageBoxButtons.OK, null, null, UsageWarning);
+                MessageBoxButtons.OK);
         }
+    }
+
+    private static bool HasArgument(string[] args, string value)
+    {
+        foreach (string arg in args)
+            if (string.Equals(arg, value, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    private static bool IsCurrentInstallation()
+    {
+        return File.Exists(Marker) && InstalledVersionMatchesCurrent() && IsScheduledTaskInstalled();
     }
 
     private static void EnableHighDpiRendering()
@@ -100,15 +120,16 @@ internal static class EdpEDiskAutoRunNative
             }
             File.WriteAllText(State, (hadValue ? "1" : "0") + "\r\n" + oldValue);
         }
+        CreateScheduledTask();
         File.WriteAllText(Marker, "installed");
-        CreateShortcut();
+        RemoveLegacyShortcut();
         using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers"))
             key.SetValue("DisableAutoplay", 1, RegistryValueKind.DWord);
         StartWatcher();
         CleanupOldInstalledExecutables(currentExe);
         ShowBrandedDialog(ProductVersion + " 版安装或更新成功", InstallDetails +
-            "\r\n\r\n再次运行相同版本的本 EXE 可卸载自动启动功能。",
-            MessageBoxButtons.OK, null, null, UsageWarning);
+            "\r\n\r\n卸载时请使用本 EXE 的 --uninstall 参数。",
+            MessageBoxButtons.OK);
     }
 
     private static void Uninstall()
@@ -116,7 +137,8 @@ internal static class EdpEDiskAutoRunNative
         if (ShowBrandedDialog("检测到已经安装", "是否卸载 EdpEDisk 自动启动功能？",
             MessageBoxButtons.YesNo, "确认卸载", "取消") != DialogResult.Yes) return;
         StopWatcherAndWait();
-        if (File.Exists(Shortcut)) File.Delete(Shortcut);
+        DeleteScheduledTask();
+        RemoveLegacyShortcut();
         bool hadValue = false;
         int oldValue = 0;
         if (File.Exists(State))
@@ -140,8 +162,7 @@ internal static class EdpEDiskAutoRunNative
         string body,
         MessageBoxButtons buttons,
         string yesText = null,
-        string noText = null,
-        string warning = null)
+        string noText = null)
     {
         using (Form dialog = new Form())
         using (Image logo = LoadBrandImage())
@@ -167,10 +188,9 @@ internal static class EdpEDiskAutoRunNative
             layout.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             layout.Padding = new Padding(26, 24, 26, 18);
             layout.ColumnCount = 2;
-            layout.RowCount = 4;
+            layout.RowCount = 3;
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96F));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -191,16 +211,6 @@ internal static class EdpEDiskAutoRunNative
             title.Text = heading;
             title.TextAlign = ContentAlignment.MiddleLeft;
             title.Font = new Font("Segoe UI", 14F, FontStyle.Bold, GraphicsUnit.Point);
-
-            Label warningText = new Label();
-            warningText.AutoSize = true;
-            warningText.MaximumSize = new Size(596, 0);
-            warningText.MinimumSize = new Size(596, 0);
-            warningText.Margin = new Padding(0, 2, 0, 16);
-            warningText.Text = warning ?? "";
-            warningText.Visible = !string.IsNullOrEmpty(warning);
-            warningText.ForeColor = Color.FromArgb(190, 36, 36);
-            warningText.Font = new Font("Segoe UI", 10.5F, FontStyle.Bold, GraphicsUnit.Point);
 
             Label bodyText = new Label();
             bodyText.AutoSize = true;
@@ -238,11 +248,9 @@ internal static class EdpEDiskAutoRunNative
 
             layout.Controls.Add(picture, 0, 0);
             layout.Controls.Add(title, 1, 0);
-            layout.Controls.Add(warningText, 0, 1);
-            layout.SetColumnSpan(warningText, 2);
-            layout.Controls.Add(bodyText, 0, 2);
+            layout.Controls.Add(bodyText, 0, 1);
             layout.SetColumnSpan(bodyText, 2);
-            layout.Controls.Add(actions, 0, 3);
+            layout.Controls.Add(actions, 0, 2);
             layout.SetColumnSpan(actions, 2);
             dialog.Controls.Add(layout);
             return dialog.ShowDialog();
@@ -327,14 +335,19 @@ internal static class EdpEDiskAutoRunNative
                                 if (!File.Exists(exe) || lastVolume == drive.Name) continue;
                                 lastVolume = drive.Name;
                                 if (Process.GetProcessesByName("EdpEDisk").Length == 0)
-                                    Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = drive.RootDirectory.FullName, UseShellExecute = true });
+                                    Process.Start(new ProcessStartInfo(exe)
+                                    {
+                                        WorkingDirectory = drive.RootDirectory.FullName,
+                                        UseShellExecute = false,
+                                        CreateNoWindow = true,
+                                        WindowStyle = ProcessWindowStyle.Hidden
+                                    });
 
                                 // The icon record is created asynchronously. Wait once,
                                 // then apply a single correction for this launch.
                                 if (stop.WaitOne(2000)) return;
                                 PromoteAndRefreshTrayIcon();
                                 nextTrayCorrection = DateTime.UtcNow.AddHours(1);
-                                RestoreWindows();
                             }
                             catch (IOException) { }
                             catch (UnauthorizedAccessException) { }
@@ -368,30 +381,30 @@ internal static class EdpEDiskAutoRunNative
 
     private static bool InstalledVersionMatchesCurrent()
     {
-        string installedPath = GetShortcutTarget();
-        if (string.IsNullOrEmpty(installedPath) || !File.Exists(installedPath)) return false;
-        string installedVersion = FileVersionInfo.GetVersionInfo(installedPath).FileVersion;
+        if (!File.Exists(InstalledExe)) return false;
+        string installedVersion = FileVersionInfo.GetVersionInfo(InstalledExe).FileVersion;
         string currentVersion = Assembly.GetExecutingAssembly().GetName().Version.ToString();
         return string.Equals(installedVersion, currentVersion, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string GetShortcutTarget()
+    private static bool IsScheduledTaskInstalled()
     {
-        if (!File.Exists(Shortcut)) return null;
-        object shell = null;
-        object link = null;
+        dynamic service = null;
+        dynamic root = null;
+        dynamic task = null;
         try
         {
-            Type shellType = Type.GetTypeFromProgID("WScript.Shell");
-            shell = Activator.CreateInstance(shellType);
-            link = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { Shortcut });
-            return Convert.ToString(link.GetType().InvokeMember("TargetPath", BindingFlags.GetProperty, null, link, null));
+            service = CreateTaskSchedulerService();
+            root = service.GetFolder("\\");
+            task = root.GetTask(ScheduledTaskName);
+            return task != null;
         }
-        catch { return null; }
+        catch { return false; }
         finally
         {
-            if (link != null && Marshal.IsComObject(link)) Marshal.FinalReleaseComObject(link);
-            if (shell != null && Marshal.IsComObject(shell)) Marshal.FinalReleaseComObject(shell);
+            ReleaseComObject(task);
+            ReleaseComObject(root);
+            ReleaseComObject(service);
         }
     }
 
@@ -530,17 +543,92 @@ internal static class EdpEDiskAutoRunNative
         }
     }
 
-    private static void CreateShortcut()
+    private static void RemoveLegacyShortcut()
     {
-        Type shellType = Type.GetTypeFromProgID("WScript.Shell");
-        dynamic shell = Activator.CreateInstance(shellType);
-        dynamic link = shell.CreateShortcut(Shortcut);
-        link.TargetPath = InstalledExe;
-        link.Arguments = "--watch";
-        link.WorkingDirectory = InstallDir;
-        link.WindowStyle = 7;
-        link.Description = ProductName;
-        link.Save();
+        if (!File.Exists(LegacyShortcut)) return;
+        TryDeleteFile(LegacyShortcut);
+        if (File.Exists(LegacyShortcut))
+            throw new IOException("无法移除旧的 Startup 开机快捷方式。请关闭占用该快捷方式的程序后重试。");
+    }
+
+    private static dynamic CreateTaskSchedulerService()
+    {
+        Type serviceType = Type.GetTypeFromProgID("Schedule.Service");
+        if (serviceType == null) throw new InvalidOperationException("Windows 任务计划程序不可用。");
+        dynamic service = Activator.CreateInstance(serviceType);
+        service.Connect();
+        return service;
+    }
+
+    private static void CreateScheduledTask()
+    {
+        dynamic service = null;
+        dynamic root = null;
+        dynamic definition = null;
+        dynamic trigger = null;
+        dynamic action = null;
+        try
+        {
+            service = CreateTaskSchedulerService();
+            root = service.GetFolder("\\");
+            definition = service.NewTask(0);
+            definition.RegistrationInfo.Description = ProductName;
+            definition.Principal.LogonType = 3;
+            definition.Principal.RunLevel = 0;
+            definition.Settings.Enabled = true;
+            definition.Settings.Hidden = true;
+            definition.Settings.AllowDemandStart = true;
+            definition.Settings.DisallowStartIfOnBatteries = false;
+            definition.Settings.StopIfGoingOnBatteries = false;
+            definition.Settings.ExecutionTimeLimit = "PT0S";
+
+            trigger = definition.Triggers.Create(9);
+            trigger.UserId = WindowsIdentity.GetCurrent().Name;
+            action = definition.Actions.Create(0);
+            action.Path = InstalledExe;
+            action.Arguments = "--watch";
+            action.WorkingDirectory = InstallDir;
+            root.RegisterTaskDefinition(ScheduledTaskName, definition, 6, null, null, 3, null);
+        }
+        finally
+        {
+            ReleaseComObject(action);
+            ReleaseComObject(trigger);
+            ReleaseComObject(definition);
+            ReleaseComObject(root);
+            ReleaseComObject(service);
+        }
+    }
+
+    private static void DeleteScheduledTask()
+    {
+        dynamic service = null;
+        dynamic root = null;
+        try
+        {
+            service = CreateTaskSchedulerService();
+            root = service.GetFolder("\\");
+            try
+            {
+                root.DeleteTask(ScheduledTaskName, 0);
+            }
+            catch (COMException ex)
+            {
+                int taskNotFound = unchecked((int)0x8004130F);
+                int fileNotFound = unchecked((int)0x80070002);
+                if (ex.ErrorCode != taskNotFound && ex.ErrorCode != fileNotFound) throw;
+            }
+        }
+        finally
+        {
+            ReleaseComObject(root);
+            ReleaseComObject(service);
+        }
+    }
+
+    private static void ReleaseComObject(object value)
+    {
+        if (value != null && Marshal.IsComObject(value)) Marshal.FinalReleaseComObject(value);
     }
 
     private static void PromoteAndRefreshTrayIcon()
@@ -595,8 +683,6 @@ internal static class EdpEDiskAutoRunNative
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
-    [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int command);
-    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern uint PrivateExtractIcons(
         string fileName, int iconIndex, int iconWidth, int iconHeight,
@@ -622,18 +708,4 @@ internal static class EdpEDiskAutoRunNative
         }
     }
 
-    private static void RestoreWindows()
-    {
-        foreach (Process process in Process.GetProcessesByName("EdpEDisk"))
-        {
-            uint target = (uint)process.Id;
-            EnumWindows((hWnd, unused) =>
-            {
-                uint pid;
-                GetWindowThreadProcessId(hWnd, out pid);
-                if (pid == target) { ShowWindow(hWnd, 9); SetForegroundWindow(hWnd); }
-                return true;
-            }, IntPtr.Zero);
-        }
-    }
 }
