@@ -13,13 +13,13 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("自动启动移动存储介质中的 EdpEDisk.exe 并保持托盘图标可见")]
 [assembly: AssemblyCompany("Local Utility")]
 [assembly: AssemblyProduct("EdpEDisk AutoRun")]
-[assembly: AssemblyVersion("1.2.9.0")]
-[assembly: AssemblyFileVersion("1.2.9.0")]
+[assembly: AssemblyVersion("1.2.10.0")]
+[assembly: AssemblyFileVersion("1.2.10.0")]
 
 internal static class EdpEDiskAutoRunNative
 {
     private const string ProductName = "EdpEDisk 自动启动与托盘固定";
-    private const string ProductVersion = "1.2.9";
+    private const string ProductVersion = "1.2.10";
     private const string InstallDetails =
         "插入 U 盘后会自动寻找根目录下的 EdpEDisk.exe，\r\n" +
         "并在开机、程序启动及每小时定期确认托盘图标保持可见。\r\n" +
@@ -43,9 +43,7 @@ internal static class EdpEDiskAutoRunNative
 
         // The long-running watcher never shows UI. Return through this path
         // before WinForms, visual styles, DPI, fonts, and image resources load.
-        // A stale legacy startup entry without arguments must not fall back
-        // to the interactive installer either.
-        if (watchRequested || (!previewRequested && !installRequested && !uninstallRequested && IsCurrentInstallation()))
+        if (watchRequested)
         {
             try { Watch(); }
             catch { }
@@ -61,6 +59,8 @@ internal static class EdpEDiskAutoRunNative
                 ShowBrandedDialog("准备安装或更新 " + ProductVersion + " 版", InstallDetails,
                     MessageBoxButtons.YesNo, "确认安装", "取消");
             else if (uninstallRequested)
+                Uninstall();
+            else if (!installRequested && IsCurrentInstallation())
                 Uninstall();
             else if (ShowBrandedDialog("准备安装或更新 " + ProductVersion + " 版", InstallDetails,
                 MessageBoxButtons.YesNo, "确认安装", "取消") == DialogResult.Yes)
@@ -128,7 +128,7 @@ internal static class EdpEDiskAutoRunNative
         StartWatcher();
         CleanupOldInstalledExecutables(currentExe);
         ShowBrandedDialog(ProductVersion + " 版安装或更新成功", InstallDetails +
-            "\r\n\r\n卸载时请使用本 EXE 的 --uninstall 参数。",
+            "\r\n\r\n再次直接运行本 EXE 可卸载自动启动功能；也可使用 --uninstall 参数。",
             MessageBoxButtons.OK);
     }
 
@@ -512,7 +512,8 @@ internal static class EdpEDiskAutoRunNative
         string keep = keepExe ?? InstalledExe;
         foreach (string path in Directory.GetFiles(InstallDir, "EdpEDiskAutoRun*.exe"))
         {
-            if (string.Equals(Path.GetFullPath(path), Path.GetFullPath(keep), StringComparison.OrdinalIgnoreCase)) continue;
+            if (!string.IsNullOrEmpty(keep) &&
+                string.Equals(Path.GetFullPath(path), Path.GetFullPath(keep), StringComparison.OrdinalIgnoreCase)) continue;
             if (string.Equals(Path.GetFullPath(path), Path.GetFullPath(currentExe), StringComparison.OrdinalIgnoreCase)) continue;
             TryDeleteFile(path);
         }

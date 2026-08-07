@@ -2,7 +2,7 @@
 
 Windows 下的 EdpEDisk 自动启动与托盘图标固定工具。
 
-当前版本：`1.2.9`
+当前版本：`1.2.10`
 
 ## 功能
 
@@ -15,16 +15,16 @@ Windows 下的 EdpEDisk 自动启动与托盘图标固定工具。
 
 ## 使用
 
-1. 首次安装或升级时运行 `EdpEDiskAutoRun.exe --install`。
+1. 首次安装或升级时直接运行 `EdpEDiskAutoRun-1.2.10.exe`；未检测到安装时会显示安装确认。
 2. 阅读安装说明，点击“确认安装”。
 3. 安装后程序会复制到：
 
    ```text
-   %APPDATA%\EdpEDiskAutoRun\EdpEDiskAutoRun-1.2.9.exe
+   %APPDATA%\EdpEDiskAutoRun\EdpEDiskAutoRun-1.2.10.exe
    ```
 
 4. 安装时注册当前用户的隐藏登录任务 `EdpEDiskAutoRun`，不创建 Startup 文件夹快捷方式；任务直接后台运行 `--watch`。
-5. 卸载时运行 `EdpEDiskAutoRun.exe --uninstall`。
+5. 已安装时再次直接运行本 EXE 会显示卸载确认；`--install` 和 `--uninstall` 参数仍可用于显式操作。
 
 升级时使用带版本号的新文件名，并在切换登录任务后清理旧版本，
 不会覆盖仍在运行的旧版 EXE；遇到短暂文件占用会自动等待并重试。
@@ -36,6 +36,11 @@ Windows 下的 EdpEDisk 自动启动与托盘图标固定工具。
 - 不使用 PowerShell/VBS 作为运行时依赖。
 - 托盘设置和自动播放设置均写入当前用户范围。
 - 发布的 EXE 未使用受信任代码签名证书签名；企业策略可能阻止未签名程序。
+
+## 1.2.10 更新
+
+- 无参数运行时根据当前安装状态显示安装或卸载确认，不再因已安装而无界面退出。
+- 只有任务计划程序调用的 `--watch` 参数保持静默后台运行。
 
 ## 1.2.8 更新
 
@@ -73,7 +78,7 @@ $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
   /reference:System.Windows.Forms.dll `
   /reference:System.Drawing.dll `
   /reference:Microsoft.CSharp.dll `
-  /out:EdpEDiskAutoRun.exe `
+  /out:EdpEDiskAutoRun-1.2.10.exe `
   EdpEDiskAutoRunNative.cs
 ```
 
