@@ -2,11 +2,13 @@
 
 Windows 下的 EdpEDisk 自动启动与托盘图标固定工具。
 
-当前版本：`1.2.10`
+当前版本：`1.2.13`
+
+> 本工具仅用于外网电脑，内网电脑不要使用。
 
 ## 功能
 
-- 插入移动盘后自动查找并启动根目录下的 `EdpEDisk.exe`。
+- 插入 U 盘后自动查找并启动根目录下的 `EdpEDisk.exe`，兼容部分被 Windows 识别为固定磁盘的 USB 设备。
 - 将 EdpEDisk 托盘图标保持在任务栏可见区域。
 - 开机、EdpEDisk 启动时校正一次，之后每小时校正一次；监听器全程后台运行。
 - 自动启动监听器安装在当前用户目录，不需要管理员权限。
@@ -15,12 +17,12 @@ Windows 下的 EdpEDisk 自动启动与托盘图标固定工具。
 
 ## 使用
 
-1. 首次安装或升级时直接运行 `EdpEDiskAutoRun-1.2.10.exe`；未检测到安装时会显示安装确认。
+1. 首次安装或升级时直接运行 `EdpEDiskAutoRun-1.2.13.exe`；未检测到安装时会显示安装确认。
 2. 阅读安装说明，点击“确认安装”。
 3. 安装后程序会复制到：
 
    ```text
-   %APPDATA%\EdpEDiskAutoRun\EdpEDiskAutoRun-1.2.10.exe
+   %APPDATA%\EdpEDiskAutoRun\EdpEDiskAutoRun-1.2.13.exe
    ```
 
 4. 安装时注册当前用户的隐藏登录任务 `EdpEDiskAutoRun`，不创建 Startup 文件夹快捷方式；任务直接后台运行 `--watch`。
@@ -36,6 +38,22 @@ Windows 下的 EdpEDisk 自动启动与托盘图标固定工具。
 - 不使用 PowerShell/VBS 作为运行时依赖。
 - 托盘设置和自动播放设置均写入当前用户范围。
 - 发布的 EXE 未使用受信任代码签名证书签名；企业策略可能阻止未签名程序。
+
+## 1.2.13 更新
+
+- 修复 `EdpEDisk.exe` 需要提升权限时无法由后台监听器自动拉起的问题；改为通过 Windows Shell 正常启动，让系统显示 UAC/密码窗口。
+
+## 1.2.12 更新
+
+- 修复启动失败后把当前 U 盘误记为已处理，导致插入后不再自动重试的问题。
+- 启动 `EdpEDisk.exe` 时改为正常窗口启动，保证需要输入密码时窗口可以显示。
+
+## 1.2.11 更新
+
+- 修复部分 U 盘或移动 SSD 被 Windows 识别为固定磁盘时不会自动启动 `EdpEDisk.exe` 的问题。
+- 检测到 `EdpEDisk.exe` 由用户或其它方式启动时，会立即延迟校正托盘图标一次，不再只等每小时校正。
+- 后台检测间隔调整为 5 秒，托盘图标仍为启动时和每小时校正。
+- 安装说明明确本工具仅用于外网电脑，内网电脑不要使用。
 
 ## 1.2.10 更新
 
@@ -78,7 +96,7 @@ $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
   /reference:System.Windows.Forms.dll `
   /reference:System.Drawing.dll `
   /reference:Microsoft.CSharp.dll `
-  /out:EdpEDiskAutoRun-1.2.10.exe `
+  /out:EdpEDiskAutoRun-1.2.13.exe `
   EdpEDiskAutoRunNative.cs
 ```
 
