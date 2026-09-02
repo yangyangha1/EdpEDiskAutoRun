@@ -4,7 +4,6 @@ using System.Drawing;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using Microsoft.Win32.SafeHandles;
 using System.Security.Principal;
 using System.Threading;
 using System.Windows.Forms;
@@ -14,13 +13,13 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("自动启动移动存储介质中的 EdpEDisk.exe 并保持托盘图标可见")]
 [assembly: AssemblyCompany("Local Utility")]
 [assembly: AssemblyProduct("EdpEDisk AutoRun")]
-[assembly: AssemblyVersion("1.2.13.0")]
-[assembly: AssemblyFileVersion("1.2.13.0")]
+[assembly: AssemblyVersion("1.2.15.0")]
+[assembly: AssemblyFileVersion("1.2.15.0")]
 
 internal static class EdpEDiskAutoRunNative
 {
     private const string ProductName = "EdpEDisk 自动启动与托盘固定";
-    private const string ProductVersion = "1.2.13";
+    private const string ProductVersion = "1.2.15";
     private const string InstallDetails =
         "本工具仅用于外网电脑，内网电脑不要使用。\r\n\r\n" +
         "插入 U 盘后会自动寻找根目录下的 EdpEDisk.exe，\r\n" +
@@ -62,6 +61,8 @@ internal static class EdpEDiskAutoRunNative
                     MessageBoxButtons.YesNo, "确认安装", "取消");
             else if (uninstallRequested)
                 Uninstall();
+            else if (installRequested)
+                Install();
             else if (!installRequested && IsCurrentInstallation())
                 Uninstall();
             else if (ShowBrandedDialog("准备安装或更新 " + ProductVersion + " 版", InstallDetails,
@@ -311,9 +312,11 @@ internal static class EdpEDiskAutoRunNative
             if (!createdNew) return;
             using (EventWaitHandle stop = new EventWaitHandle(false, EventResetMode.ManualReset, EventName))
             {
-                string lastVolume = "";
+                System.Collections.Generic.HashSet<string> knownDrives =
+                    new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                System.Collections.Generic.Dictionary<string, DateTime> nextLaunchAttempts =
+                    new System.Collections.Generic.Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
                 DateTime nextTrayCorrection = DateTime.MinValue;
-                DateTime nextLaunchAttempt = DateTime.MinValue;
                 bool wasEdpRunning = IsEdpEDiskRunning();
 
                 // Explorer can recreate notification-area records late during logon.
@@ -339,22 +342,35 @@ internal static class EdpEDiskAutoRunNative
 
                         bool launchedEdp = false;
                         DriveInfo[] drives = DriveInfo.GetDrives();
+                        System.Collections.Generic.HashSet<string> currentDrives =
+                            new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
                         foreach (DriveInfo drive in drives)
                         {
                             try
                             {
-                                if (!IsEdpInstallDrive(drive)) continue;
+                                if (!drive.IsReady) continue;
+                                string driveName = drive.Name;
+                                currentDrives.Add(driveName);
                                 string exe = Path.Combine(drive.RootDirectory.FullName, "EdpEDisk.exe");
                                 if (!File.Exists(exe)) continue;
-                                if (!IsEdpEDiskRunning())
+                                bool isNewDrive = !knownDrives.Contains(driveName);
+                                DateTime retryAfter;
+                                bool retryDue = nextLaunchAttempts.TryGetValue(driveName, out retryAfter) &&
+                                    DateTime.UtcNow >= retryAfter;
+                                if (!isNewDrive && !retryDue) continue;
+                                if (IsEdpEDiskRunning())
                                 {
-                                    if (lastVolume == drive.Name && DateTime.UtcNow < nextLaunchAttempt) continue;
-                                    nextLaunchAttempt = DateTime.UtcNow.AddSeconds(30);
-                                    if (TryStartEdpEDisk(exe, drive.RootDirectory.FullName))
-                                    {
-                                        lastVolume = drive.Name;
-                                        launchedEdp = true;
-                                    }
+                                    nextLaunchAttempts.Remove(driveName);
+                                    continue;
+                                }
+                                if (TryStartEdpEDisk(exe, drive.RootDirectory.FullName))
+                                {
+                                    nextLaunchAttempts.Remove(driveName);
+                                    launchedEdp = true;
+                                }
+                                else
+                                {
+                                    nextLaunchAttempts[driveName] = DateTime.UtcNow.AddSeconds(30);
                                 }
                             }
                             catch (IOException) { }
@@ -367,22 +383,16 @@ internal static class EdpEDiskAutoRunNative
                             wasEdpRunning = IsEdpEDiskRunning();
                         }
 
-                        bool stillPresent = false;
-                        foreach (DriveInfo drive in drives)
+                        foreach (string driveName in new System.Collections.Generic.List<string>(nextLaunchAttempts.Keys))
                         {
-                            try
-                            {
-                                if (IsEdpInstallDrive(drive) && drive.Name == lastVolume)
-                                    stillPresent = true;
-                            }
-                            catch (IOException) { }
-                            catch (UnauthorizedAccessException) { }
+                            if (!currentDrives.Contains(driveName))
+                                nextLaunchAttempts.Remove(driveName);
                         }
-                        if (!stillPresent) lastVolume = "";
+                        knownDrives = currentDrives;
                     }
                     catch
                     {
-                        // Removable drives can disappear between enumeration and access.
+                        // Drives can disappear between enumeration and access.
                         // Keep the watcher alive and retry instead of exiting at logon.
                     }
 
@@ -419,34 +429,6 @@ internal static class EdpEDiskAutoRunNative
         }
         catch (System.ComponentModel.Win32Exception) { return false; }
         catch (InvalidOperationException) { return false; }
-    }
-
-    private static bool IsEdpInstallDrive(DriveInfo drive)
-    {
-        if (!drive.IsReady) return false;
-        if (drive.DriveType == DriveType.Removable) return true;
-        if (drive.DriveType != DriveType.Fixed) return false;
-        return IsUsbBackedVolume(drive.Name);
-    }
-
-    private static bool IsUsbBackedVolume(string driveName)
-    {
-        if (string.IsNullOrEmpty(driveName) || driveName.Length < 2) return false;
-        string volumePath = @"\\.\" + driveName.Substring(0, 2);
-        using (SafeFileHandle handle = CreateFile(volumePath, 0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero))
-        {
-            if (handle == null || handle.IsInvalid) return false;
-
-            byte[] query = new byte[12];
-            byte[] descriptor = new byte[1024];
-            int returned;
-            if (!DeviceIoControl(handle, IOCTL_STORAGE_QUERY_PROPERTY,
-                query, query.Length, descriptor, descriptor.Length, out returned, IntPtr.Zero))
-                return false;
-            if (returned < 32) return false;
-            return BitConverter.ToInt32(descriptor, 28) == BUS_TYPE_USB;
-        }
     }
 
     private static bool InstalledVersionMatchesCurrent()
@@ -775,19 +757,6 @@ internal static class EdpEDiskAutoRunNative
     [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr iconHandle);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern uint RegisterWindowMessage(string message);
     [DllImport("user32.dll")] private static extern bool SendNotifyMessage(IntPtr hWnd, uint message, UIntPtr wParam, IntPtr lParam);
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern SafeFileHandle CreateFile(
-        string fileName, uint desiredAccess, uint shareMode, IntPtr securityAttributes,
-        uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
-    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool DeviceIoControl(
-        SafeFileHandle device, uint controlCode, byte[] inBuffer, int inBufferSize,
-        byte[] outBuffer, int outBufferSize, out int bytesReturned, IntPtr overlapped);
-
-    private const uint FILE_SHARE_READ = 0x00000001;
-    private const uint FILE_SHARE_WRITE = 0x00000002;
-    private const uint OPEN_EXISTING = 3;
-    private const uint IOCTL_STORAGE_QUERY_PROPERTY = 0x002D1400;
-    private const int BUS_TYPE_USB = 7;
-
     private static void NotifyEdpEDiskTaskbarCreated()
     {
         uint message = RegisterWindowMessage("TaskbarCreated");

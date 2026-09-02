@@ -2,13 +2,13 @@
 
 Windows 下的 EdpEDisk 自动启动与托盘图标固定工具。
 
-当前版本：`1.2.13`
+当前版本：`1.2.15`
 
 > 本工具仅用于外网电脑，内网电脑不要使用。
 
 ## 功能
 
-- 插入 U 盘后自动查找并启动根目录下的 `EdpEDisk.exe`，兼容部分被 Windows 识别为固定磁盘的 USB 设备。
+- 插入新盘符后自动查找并启动根目录下的 `EdpEDisk.exe`，不依赖 Windows 对 U 盘/固定磁盘的类型判断。
 - 将 EdpEDisk 托盘图标保持在任务栏可见区域。
 - 开机、EdpEDisk 启动时校正一次，之后每小时校正一次；监听器全程后台运行。
 - 自动启动监听器安装在当前用户目录，不需要管理员权限。
@@ -17,16 +17,16 @@ Windows 下的 EdpEDisk 自动启动与托盘图标固定工具。
 
 ## 使用
 
-1. 首次安装或升级时直接运行 `EdpEDiskAutoRun-1.2.13.exe`；未检测到安装时会显示安装确认。
+1. 首次安装或升级时直接运行 `EdpEDiskAutoRun-1.2.15.exe`；未检测到安装时会显示安装确认。
 2. 阅读安装说明，点击“确认安装”。
 3. 安装后程序会复制到：
 
    ```text
-   %APPDATA%\EdpEDiskAutoRun\EdpEDiskAutoRun-1.2.13.exe
+   %APPDATA%\EdpEDiskAutoRun\EdpEDiskAutoRun-1.2.15.exe
    ```
 
 4. 安装时注册当前用户的隐藏登录任务 `EdpEDiskAutoRun`，不创建 Startup 文件夹快捷方式；任务直接后台运行 `--watch`。
-5. 已安装时再次直接运行本 EXE 会显示卸载确认；`--install` 和 `--uninstall` 参数仍可用于显式操作。
+5. 已安装时再次直接运行本 EXE 会显示卸载确认；`--install` 可用于明确安装或升级，`--uninstall` 可用于显式卸载。
 
 升级时使用带版本号的新文件名，并在切换登录任务后清理旧版本，
 不会覆盖仍在运行的旧版 EXE；遇到短暂文件占用会自动等待并重试。
@@ -38,6 +38,16 @@ Windows 下的 EdpEDisk 自动启动与托盘图标固定工具。
 - 不使用 PowerShell/VBS 作为运行时依赖。
 - 托盘设置和自动播放设置均写入当前用户范围。
 - 发布的 EXE 未使用受信任代码签名证书签名；企业策略可能阻止未签名程序。
+
+## 1.2.15 更新
+
+- 修复 `--install` 参数仍会等待确认窗口的问题；显式安装参数现在会直接安装或升级，普通双击仍显示确认窗口。
+
+## 1.2.14 更新
+
+- 改为监控所有新增盘符；只要新盘符根目录存在 `EdpEDisk.exe`，就尝试自动拉起。
+- 移除对 `DriveType.Removable`、固定磁盘 USB 总线等类型判断的依赖，避免漏掉被系统特殊识别的 U 盘。
+- 不再使用单个盘符记忆，支持多个新增盘符分别触发。
 
 ## 1.2.13 更新
 
@@ -96,7 +106,7 @@ $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
   /reference:System.Windows.Forms.dll `
   /reference:System.Drawing.dll `
   /reference:Microsoft.CSharp.dll `
-  /out:EdpEDiskAutoRun-1.2.13.exe `
+  /out:EdpEDiskAutoRun-1.2.15.exe `
   EdpEDiskAutoRunNative.cs
 ```
 
