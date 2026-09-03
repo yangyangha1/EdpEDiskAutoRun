@@ -13,13 +13,13 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("自动启动移动存储介质中的 EdpEDisk.exe 并保持托盘图标可见")]
 [assembly: AssemblyCompany("Local Utility")]
 [assembly: AssemblyProduct("EdpEDisk AutoRun")]
-[assembly: AssemblyVersion("1.2.15.0")]
-[assembly: AssemblyFileVersion("1.2.15.0")]
+[assembly: AssemblyVersion("1.2.16.0")]
+[assembly: AssemblyFileVersion("1.2.16.0")]
 
 internal static class EdpEDiskAutoRunNative
 {
     private const string ProductName = "EdpEDisk 自动启动与托盘固定";
-    private const string ProductVersion = "1.2.15";
+    private const string ProductVersion = "1.2.16";
     private const string InstallDetails =
         "本工具仅用于外网电脑，内网电脑不要使用。\r\n\r\n" +
         "插入 U 盘后会自动寻找根目录下的 EdpEDisk.exe，\r\n" +
@@ -31,6 +31,7 @@ internal static class EdpEDiskAutoRunNative
     private static readonly string State = Path.Combine(InstallDir, "autoplay-state.txt");
     private static readonly string LegacyShortcut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "EdpEDiskAutoRun.lnk");
     private const string ScheduledTaskName = "EdpEDiskAutoRun";
+    private const string StartupRunValueName = "EdpEDiskAutoRun";
     private static readonly string EventName = "Local\\EdpEDiskAutoRun_Stop";
     private static readonly string MutexName = "Local\\EdpEDiskAutoRun_Watcher";
 
@@ -86,7 +87,8 @@ internal static class EdpEDiskAutoRunNative
 
     private static bool IsCurrentInstallation()
     {
-        return File.Exists(Marker) && InstalledVersionMatchesCurrent() && IsScheduledTaskInstalled();
+        return File.Exists(Marker) && InstalledVersionMatchesCurrent() &&
+            (IsScheduledTaskInstalled() || IsStartupRunInstalled());
     }
 
     private static void EnableHighDpiRendering()
@@ -123,7 +125,12 @@ internal static class EdpEDiskAutoRunNative
             }
             File.WriteAllText(State, (hadValue ? "1" : "0") + "\r\n" + oldValue);
         }
-        CreateScheduledTask();
+        // Task Scheduler cannot reliably launch this per-user EXE on some
+        // redirected profiles (it reports 0x80070002 even while the file is
+        // present). Use the current-user Run entry as the primary logon path
+        // and remove any legacy task left by earlier versions.
+        try { DeleteScheduledTask(); } catch { }
+        CreateStartupRunValue();
         File.WriteAllText(Marker, "installed");
         RemoveLegacyShortcut();
         using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers"))
@@ -140,7 +147,8 @@ internal static class EdpEDiskAutoRunNative
         if (ShowBrandedDialog("检测到已经安装", "是否卸载 EdpEDisk 自动启动功能？",
             MessageBoxButtons.YesNo, "确认卸载", "取消") != DialogResult.Yes) return;
         StopWatcherAndWait();
-        DeleteScheduledTask();
+        try { DeleteScheduledTask(); } catch { }
+        RemoveStartupRunValue();
         RemoveLegacyShortcut();
         bool hadValue = false;
         int oldValue = 0;
@@ -631,12 +639,17 @@ internal static class EdpEDiskAutoRunNative
             definition.Settings.Enabled = true;
             definition.Settings.Hidden = true;
             definition.Settings.AllowDemandStart = true;
+            definition.Settings.StartWhenAvailable = true;
             definition.Settings.DisallowStartIfOnBatteries = false;
             definition.Settings.StopIfGoingOnBatteries = false;
             definition.Settings.ExecutionTimeLimit = "PT0S";
 
             trigger = definition.Triggers.Create(9);
             trigger.UserId = WindowsIdentity.GetCurrent().Name;
+            // The user profile may still be mounting when Explorer fires the
+            // logon trigger. Delay the first attempt so the installed EXE is
+            // available, while StartWhenAvailable covers missed logons.
+            try { trigger.Delay = "PT10S"; } catch { }
             action = definition.Actions.Create(0);
             action.Path = InstalledExe;
             action.Arguments = "--watch";
@@ -676,6 +689,42 @@ internal static class EdpEDiskAutoRunNative
         {
             ReleaseComObject(root);
             ReleaseComObject(service);
+        }
+    }
+
+    private static void CreateStartupRunValue()
+    {
+        using (RegistryKey key = Registry.CurrentUser.CreateSubKey(
+            @"Software\Microsoft\Windows\CurrentVersion\Run"))
+        {
+            if (key == null) throw new InvalidOperationException("无法写入当前用户启动项。");
+            key.SetValue(StartupRunValueName, "\"" + InstalledExe + "\" --watch", RegistryValueKind.String);
+        }
+    }
+
+    private static bool IsStartupRunInstalled()
+    {
+        try
+        {
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Run"))
+            {
+                object value = key == null ? null : key.GetValue(StartupRunValueName);
+                return value != null && string.Equals(
+                    Convert.ToString(value),
+                    "\"" + InstalledExe + "\" --watch",
+                    StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        catch { return false; }
+    }
+
+    private static void RemoveStartupRunValue()
+    {
+        using (RegistryKey key = Registry.CurrentUser.OpenSubKey(
+            @"Software\Microsoft\Windows\CurrentVersion\Run", true))
+        {
+            if (key != null) key.DeleteValue(StartupRunValueName, false);
         }
     }
 

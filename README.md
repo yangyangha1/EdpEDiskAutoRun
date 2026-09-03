@@ -2,7 +2,7 @@
 
 Windows 下的 EdpEDisk 自动启动与托盘图标固定工具。
 
-当前版本：`1.2.15`
+当前版本：`1.2.16`
 
 > 本工具仅用于外网电脑，内网电脑不要使用。
 
@@ -17,18 +17,18 @@ Windows 下的 EdpEDisk 自动启动与托盘图标固定工具。
 
 ## 使用
 
-1. 首次安装或升级时直接运行 `EdpEDiskAutoRun-1.2.15.exe`；未检测到安装时会显示安装确认。
+1. 首次安装或升级时直接运行 `EdpEDiskAutoRun-1.2.16.exe`；未检测到安装时会显示安装确认。
 2. 阅读安装说明，点击“确认安装”。
 3. 安装后程序会复制到：
 
    ```text
-   %APPDATA%\EdpEDiskAutoRun\EdpEDiskAutoRun-1.2.15.exe
+   %APPDATA%\EdpEDiskAutoRun\EdpEDiskAutoRun-1.2.16.exe
    ```
 
-4. 安装时注册当前用户的隐藏登录任务 `EdpEDiskAutoRun`，不创建 Startup 文件夹快捷方式；任务直接后台运行 `--watch`。
+4. 安装时写入当前用户启动项 `EdpEDiskAutoRun`，登录后直接后台运行 `--watch`；同时清理旧版本留下的任务计划和 Startup 文件夹快捷方式。
 5. 已安装时再次直接运行本 EXE 会显示卸载确认；`--install` 可用于明确安装或升级，`--uninstall` 可用于显式卸载。
 
-升级时使用带版本号的新文件名，并在切换登录任务后清理旧版本，
+升级时使用带版本号的新文件名，并在切换登录启动项后清理旧版本，
 不会覆盖仍在运行的旧版 EXE；遇到短暂文件占用会自动等待并重试。
 
 ## 安全边界
@@ -38,6 +38,11 @@ Windows 下的 EdpEDisk 自动启动与托盘图标固定工具。
 - 不使用 PowerShell/VBS 作为运行时依赖。
 - 托盘设置和自动播放设置均写入当前用户范围。
 - 发布的 EXE 未使用受信任代码签名证书签名；企业策略可能阻止未签名程序。
+
+## 1.2.16 更新
+
+- 修复重启后后台监听器偶发不启动的问题：改用当前用户启动项，在用户配置加载完成后启动监听器，并清理旧版本任务计划。
+- 启动项为当前用户范围，不需要管理员权限，不修改系统安全策略。
 
 ## 1.2.15 更新
 
@@ -106,7 +111,7 @@ $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
   /reference:System.Windows.Forms.dll `
   /reference:System.Drawing.dll `
   /reference:Microsoft.CSharp.dll `
-  /out:EdpEDiskAutoRun-1.2.15.exe `
+  /out:EdpEDiskAutoRun-1.2.16.exe `
   EdpEDiskAutoRunNative.cs
 ```
 
