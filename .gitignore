@@ -24,3 +24,7 @@ EdpEDiskAutoRun-icon-sizes.png
 EdpEDiskAutoRun-icon.svg
 generate_icon.py
 SHA256SUMS.txt
+RegressionChecks.exe
+.verification-backup/
+*.obj
+*.res
