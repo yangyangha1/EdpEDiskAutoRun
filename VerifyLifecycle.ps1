@@ -1,4 +1,4 @@
-param([string]$Executable = (Join-Path $PSScriptRoot 'EdpEDiskAutoRun-1.2.17.exe'), [switch]$ResumeReinstall, [switch]$UpgradeFromPrevious, [switch]$RepairInstalled, [switch]$SelfUninstall)
+param([string]$Executable = (Join-Path $PSScriptRoot 'EdpEDiskAutoRun-1.3.0.exe'), [switch]$ResumeReinstall, [switch]$UpgradeFromPrevious, [switch]$RepairInstalled, [switch]$SelfUninstall)
 $ErrorActionPreference = 'Stop'
 Add-Type @'
 using System;
@@ -46,8 +46,8 @@ function Close-Success($Process, [string]$Heading) {
 }
 
 $install = Join-Path $env:APPDATA 'EdpEDiskAutoRun'
-$newTarget = Join-Path $install 'EdpEDiskAutoRun-1.2.17.exe'
-$watcherTarget = Join-Path $install 'EdpEDiskAutoRun-Watcher-1.2.17.exe'
+$newTarget = Join-Path $install 'EdpEDiskAutoRun-1.3.0.exe'
+$watcherTarget = Join-Path $install 'EdpEDiskAutoRun-Watcher-1.3.0.exe'
 $runPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 function Get-StartupCommand {
     (Get-ItemProperty -LiteralPath $runPath -Name EdpEDiskAutoRun -ErrorAction SilentlyContinue).EdpEDiskAutoRun
@@ -56,21 +56,21 @@ function Assert-Installed {
     if ((Get-StartupCommand) -ne ('"' + $watcherTarget + '" --watch')) { throw '登录启动项未直接调用新版原生后台。' }
     if (Get-ScheduledTask -TaskName EdpEDiskAutoRun -ErrorAction SilentlyContinue) { throw '旧计划任务未移除。' }
     if ((Get-FileHash -LiteralPath $newTarget).Hash -ne (Get-FileHash -LiteralPath $Executable).Hash) { throw '安装文件哈希不一致。' }
-    if ((Get-FileHash -LiteralPath $watcherTarget).Hash -ne (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'EdpEDiskAutoRun-Watcher-1.2.17.exe')).Hash) { throw '原生后台哈希不一致。' }
+    if ((Get-FileHash -LiteralPath $watcherTarget).Hash -ne (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'EdpEDiskAutoRun-Watcher-1.3.0.exe')).Hash) { throw '原生后台哈希不一致。' }
 }
 if ($RepairInstalled) {
     if ($UpgradeFromPrevious -or $ResumeReinstall) { throw '修复测试不能与其它恢复模式同时使用。' }
     $dialog = Start-Process -FilePath $Executable -ArgumentList '--install' -PassThru
-    Close-Success $dialog '1.2.17 版安装或更新成功'
+    Close-Success $dialog '1.3.0 版安装或更新成功'
     Write-Output 'PASS explicit repair installs freshly rebuilt same version'
 }
 if ($UpgradeFromPrevious) {
     if ($ResumeReinstall) { throw '不能同时指定两个恢复/升级测试模式。' }
-    $previous = Join-Path $PSScriptRoot '.verification-backup\EdpEDiskAutoRun-1.2.16.exe'
+    $previous = Join-Path $PSScriptRoot '.verification-backup\EdpEDiskAutoRun-1.2.17.exe'
     if (-not (Test-Path -LiteralPath $previous)) { throw '没有备份的旧版，无法运行升级测试。' }
-    if ((Get-FileHash -LiteralPath $previous).Hash -ne 'BC620213399AABF1FA72E6FE5505E854C45D1E3ABEB8FBF563E3781E0296C400') { throw '旧版发布文件校验失败。' }
+    if ((Get-FileHash -LiteralPath $previous).Hash -ne 'DC24859CE1A55D6919FF5B91B37C82C5949631C352697B69D7705484048AA412') { throw '旧版发布文件校验失败。' }
     $dialog = Start-Process -FilePath $previous -ArgumentList '--install' -PassThru
-    Close-Success $dialog '1.2.16 版安装或更新成功'
+    Close-Success $dialog '1.2.17 版安装或更新成功'
     Write-Output 'PASS prepared latest previous release for upgrade test'
 }
 if (-not $ResumeReinstall) {
@@ -91,7 +91,7 @@ if (-not $ResumeReinstall) {
     if ($incomingVersion -lt $existingVersion) { throw '测试文件比已安装版本旧，停止测试，保留现有安装。' }
     if ($incomingVersion -gt $existingVersion) {
         $dialog = Start-Process -FilePath $Executable -PassThru
-        $button = Wait-Dialog $dialog '准备覆盖安装 1.2.17 版' '取消'
+        $button = Wait-Dialog $dialog '准备覆盖安装 1.3.0 版' '取消'
         [LifecycleWindow]::Click($button[-1])
         if (-not $dialog.WaitForExit(10000)) { throw '取消窗口未退出。' }
         if ((Get-StartupCommand) -ne $oldRun) { throw '取消更新改变了登录启动项。' }
@@ -99,9 +99,9 @@ if (-not $ResumeReinstall) {
         if ($oldTask -and (!$afterTask -or $afterTask.Actions[0].Execute -ne $oldTarget)) { throw '取消更新改变了旧计划任务。' }
         Write-Output 'PASS cancel preserves previous installation'
         $dialog = Start-Process -FilePath $Executable -PassThru
-        $button = Wait-Dialog $dialog '准备覆盖安装 1.2.17 版' '确认更新'
+        $button = Wait-Dialog $dialog '准备覆盖安装 1.3.0 版' '确认更新'
         [LifecycleWindow]::Click($button[-1])
-        Close-Success $dialog '1.2.17 版安装或更新成功'
+        Close-Success $dialog '1.3.0 版安装或更新成功'
         Assert-Installed
         if (Test-Path -LiteralPath $oldTarget) { throw '旧版安装文件未清理。' }
         Write-Output 'PASS upgrade replaces old executable and migrates startup'
@@ -119,15 +119,15 @@ if (-not $ResumeReinstall) {
     Close-Success $dialog '卸载完成'
     if (Get-ScheduledTask -TaskName EdpEDiskAutoRun -ErrorAction SilentlyContinue) { throw '卸载后任务仍在。' }
     if (Get-StartupCommand) { throw '卸载后登录启动项仍在。' }
-    foreach ($name in 'autoplay-state.txt','installed.flag','EdpEDiskAutoRun-1.2.17.exe','EdpEDiskAutoRun-Watcher-1.2.17.exe') {
-        if ($SelfUninstall -and $name -eq 'EdpEDiskAutoRun-1.2.17.exe') { continue } # A running EXE cannot delete itself.
+    foreach ($name in 'autoplay-state.txt','installed.flag','EdpEDiskAutoRun-1.3.0.exe','EdpEDiskAutoRun-Watcher-1.3.0.exe') {
+        if ($SelfUninstall -and $name -eq 'EdpEDiskAutoRun-1.3.0.exe') { continue } # A running EXE cannot delete itself.
         if (Test-Path -LiteralPath (Join-Path $install $name)) { throw "卸载后 $name 仍在。" }
     }
     Write-Output 'PASS uninstall removes both startup modes, executables and restore state'
 }
 $dialog = Start-Process -FilePath $Executable -PassThru
-$button = Wait-Dialog $dialog '准备安装 1.2.17 版' '确认安装'
+$button = Wait-Dialog $dialog '准备安装 1.3.0 版' '确认安装'
 [LifecycleWindow]::Click($button[-1])
-Close-Success $dialog '1.2.17 版安装或更新成功'
+Close-Success $dialog '1.3.0 版安装或更新成功'
 Assert-Installed
 Write-Output 'PASS reinstall leaves verified new version installed'

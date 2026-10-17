@@ -16,6 +16,40 @@ static HANDLE pendingLaunch = nullptr;
 static int pendingDrive = -1;
 static ULONGLONG retryAt[26] = {};
 static DWORD driveGeneration[26] = {}, pendingGeneration = 0;
+static DWORD activationPid = 0, lastActivationPid = 0;
+static ULONGLONG nextActivation = 0, activationDeadline = 0;
+
+static void ScheduleActivation(DWORD pid) {
+    if (!pid || pid == lastActivationPid) return;
+    activationPid = lastActivationPid = pid;
+    nextActivation = GetTickCount64() + 250;
+    activationDeadline = nextActivation + 15000;
+}
+
+static BOOL CALLBACK FindInputWindow(HWND window, LPARAM context) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(window, &pid);
+    if (pid != activationPid || !IsWindowVisible(window) || !IsWindowEnabled(window) ||
+        (GetWindowLongPtrW(window, GWL_EXSTYLE) & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE))) return TRUE;
+    *reinterpret_cast<HWND*>(context) = window;
+    return FALSE;
+}
+
+static void ActivateNewClient() {
+    if (GetTickCount64() >= activationDeadline) { activationPid = 0; return; }
+    HWND window = nullptr;
+    EnumWindows(FindInputWindow, reinterpret_cast<LPARAM>(&window));
+    if (window) {
+        // Activate only once; never set HWND_TOPMOST or keep pulling focus back.
+        if (IsIconic(window)) ShowWindowAsync(window, SW_RESTORE);
+        if (!SetForegroundWindow(window)) {
+            FLASHWINFO flash = { sizeof(flash), window, FLASHW_TRAY, 3, 0 };
+            FlashWindowEx(&flash);
+        }
+        activationPid = 0;
+    }
+    else nextActivation = GetTickCount64() + 250;
+}
 
 static bool SupportedDrive(UINT type) {
     return type == DRIVE_REMOVABLE || type == DRIVE_FIXED || type == DRIVE_REMOTE;
@@ -169,6 +203,7 @@ static void ScanDrives() {
                 continue;
             }
             edpPid = process.dwProcessId;
+            ScheduleActivation(edpPid);
             CloseHandle(process.hThread);
             CloseHandle(process.hProcess);
         }
@@ -234,6 +269,7 @@ static int Watch(HINSTANCE instance) {
                 nextTray = now;
             }
             DWORD pid = FindProcess(L"EdpEDisk.exe"), shellPid = 0;
+            if (pid != edpPid) ScheduleActivation(pid);
             HWND shell = FindWindowW(L"Shell_TrayWnd", nullptr);
             GetWindowThreadProcessId(shell, &shellPid);
             if (pid != edpPid || shell != taskbar || shellPid != explorerPid) {
@@ -255,9 +291,11 @@ static int Watch(HINSTANCE instance) {
             if (PromoteIcons() && now >= nextRefresh) { RefreshIcon(); nextRefresh = now + 30000; }
             nextTray = now + (edpPid ? 30000 : 60000);
         }
+        if (activationPid && now >= nextActivation) ActivateNewClient();
         ULONGLONG due = nextProcess;
         if (nextDrive < due) due = nextDrive;
         if (nextTray < due) due = nextTray;
+        if (activationPid && nextActivation < due) due = nextActivation;
         now = GetTickCount64();
         DWORD timeout = due > now ? static_cast<DWORD>(due - now) : 0;
         waits[2] = pendingLaunch;
@@ -297,6 +335,47 @@ static int Watch(HINSTANCE instance) {
     return result;
 }
 
+static bool ActivationSelfTest() {
+    DWORD pid = GetCurrentProcessId();
+    HWND previous = GetForegroundWindow();
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+    HWND hidden = CreateWindowExW(0, L"STATIC", L"Edp hidden test", WS_OVERLAPPEDWINDOW,
+        0, 0, 160, 80, nullptr, nullptr, instance, nullptr);
+    HWND tool = CreateWindowExW(WS_EX_TOOLWINDOW, L"STATIC", L"Edp tool test", WS_OVERLAPPEDWINDOW,
+        0, 0, 160, 80, nullptr, nullptr, instance, nullptr);
+    HWND input = CreateWindowExW(0, L"STATIC", L"Edp input test", WS_OVERLAPPEDWINDOW,
+        0, 0, 160, 80, nullptr, nullptr, instance, nullptr);
+    bool passed = false;
+    if (hidden && tool && input) {
+        ShowWindow(tool, SW_SHOWNOACTIVATE);
+        ScheduleActivation(pid);
+        ActivateNewClient();
+        bool waiting = activationPid == pid; // Hidden and tool windows are not input targets.
+        ShowWindow(input, SW_SHOWNOACTIVATE);
+        EnableWindow(input, FALSE);
+        HWND selected = nullptr;
+        EnumWindows(FindInputWindow, reinterpret_cast<LPARAM>(&selected));
+        waiting = waiting && selected == nullptr;
+        EnableWindow(input, TRUE);
+        EnumWindows(FindInputWindow, reinterpret_cast<LPARAM>(&selected));
+        ActivateNewClient();
+        bool completed = activationPid == 0 && !(GetWindowLongPtrW(input, GWL_EXSTYLE) & WS_EX_TOPMOST);
+        ScheduleActivation(pid);
+        bool once = activationPid == 0; // Polling the same process must never steal focus again.
+        ScheduleActivation(0xFFFFFFFE);
+        activationDeadline = GetTickCount64();
+        ActivateNewClient();
+        passed = waiting && selected == input && completed && once && activationPid == 0;
+    }
+    if (input) DestroyWindow(input);
+    if (tool) DestroyWindow(tool);
+    if (hidden) DestroyWindow(hidden);
+    if (previous && IsWindow(previous)) SetForegroundWindow(previous);
+    activationPid = lastActivationPid = 0;
+    nextActivation = activationDeadline = 0;
+    return passed;
+}
+
 static int SelfTest() {
     wchar_t executable[MAX_PATH], keyPath[256];
     GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
@@ -307,6 +386,7 @@ static int SelfTest() {
     if (!SupportedDrive(DRIVE_FIXED) || !SupportedDrive(DRIVE_REMOVABLE) || !SupportedDrive(DRIVE_REMOTE) || SupportedDrive(DRIVE_NO_ROOT_DIR)) return 6;
     if (!LaunchPath(L"E:\\EdpEDisk.exe") || LaunchPath(L"E:\\Other.exe") || LaunchPath(L"E:\\sub\\EdpEDisk.exe")) return 7;
     if (LaunchClient(L"\"E:\\Other.exe\"") != ERROR_INVALID_PARAMETER) return 8;
+    if (!ActivationSelfTest()) return 9;
     DEV_BROADCAST_VOLUME volume = {};
     volume.dbcv_size = sizeof(volume);
     volume.dbcv_devicetype = DBT_DEVTYP_VOLUME;

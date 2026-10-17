@@ -12,15 +12,16 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("自动启动移动存储介质中的 EdpEDisk.exe 并保持托盘图标可见")]
 [assembly: AssemblyCompany("Local Utility")]
 [assembly: AssemblyProduct("EdpEDisk AutoRun")]
-[assembly: AssemblyVersion("1.2.17.0")]
-[assembly: AssemblyFileVersion("1.2.17.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
 
 internal static class EdpEDiskAutoRunNative
 {
     private const string ProductName = "EdpEDisk 自动启动与托盘固定";
-    private const string ProductVersion = "1.2.17";
+    private const string ProductVersion = "1.3.0";
     private const string InstallDetails =
         "检测新盘符后会自动寻找根目录下的 EdpEDisk.exe，\r\n" +
+        "客户端窗口就绪后仅激活一次，方便输入密码，不持续置顶。\r\n" +
         "并在程序启动、图标变化及任务栏重建后保持托盘图标可见。\r\n" +
         "不会自动打开 U 盘文件夹。";
     private static readonly string InstallDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "EdpEDiskAutoRun");
